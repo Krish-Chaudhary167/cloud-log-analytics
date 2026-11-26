@@ -1,0 +1,7 @@
+.env
+*.pem
+*.csv
+__pycache__/
+venv/
+logs/
+.aws/
