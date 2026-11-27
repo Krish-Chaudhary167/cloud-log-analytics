@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud Log Analytics Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f4f6fa; --card:#ffffff; --text:#1b2430; --muted:#667085; --border:#e3e8ef; --accent:#2563eb; --danger:#dc2626; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1520; --card:#182131; --text:#e6ebf2; --muted:#9aa7b8; --border:#263247; --accent:#60a5fa; --danger:#f87171; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { margin:0 0 4px; font-size:24px; }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:20px; }
+  .grid { display:grid; gap:16px; }
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom:16px; }
+  .two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .kpi .label { color:var(--muted); font-size:13px; }
+  .kpi .value { font-size:28px; font-weight:700; margin-top:4px; }
+  .kpi .value.bad { color:var(--danger); }
+  .card h2 { margin:0 0 12px; font-size:15px; }
+  .chart { position:relative; height:280px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; }
+  .badge { background:var(--danger); color:#fff; border-radius:999px; padding:2px 10px; font-size:12px; }
+  #status { color:var(--danger); margin-bottom:12px; }
+  footer { color:var(--muted); font-size:12px; margin-top:8px; }
+</style>
+</head>
+<body>
+  <h1>Cloud Log Analytics Dashboard</h1>
+  <div class="sub">Logs processed with Hadoop MapReduce, stored in MongoDB</div>
+  <div id="status"></div>
+
+  <div class="grid kpis">
+    <div class="card kpi"><div class="label">Total requests</div><div class="value" id="k-total">-</div></div>
+    <div class="card kpi"><div class="label">Total errors (4xx/5xx)</div><div class="value bad" id="k-errors">-</div></div>
+    <div class="card kpi"><div class="label">Error rate</div><div class="value" id="k-rate">-</div></div>
+    <div class="card kpi"><div class="label">Peak daily active users</div><div class="value" id="k-users">-</div></div>
+    <div class="card kpi"><div class="label">Suspicious IPs</div><div class="value bad" id="k-ips">-</div></div>
+  </div>
+
+  <div class="grid two">
+    <div class="card"><h2>Requests per endpoint</h2><div class="chart"><canvas id="c-endpoints"></canvas></div></div>
+    <div class="card"><h2>Daily active users</h2><div class="chart"><canvas id="c-dau"></canvas></div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2>Errors per hour (trend)</h2>
+    <div class="chart"><canvas id="c-trend"></canvas></div>
+  </div>
+
+  <div class="grid two">
+    <div class="card"><h2>Error rate by hour of day (%)</h2><div class="chart"><canvas id="c-hod"></canvas></div></div>
+    <div class="card">
+      <h2>Security anomalies: IPs with many failed logins</h2>
+      <table>
+        <thead><tr><th>IP address</th><th>Failed attempts</th><th>Status</th></tr></thead>
+        <tbody id="anomalies"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer id="footer"></footer>
+
+<script>
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fmt = n => Number(n).toLocaleString();
+
+  async function main() {
+    let d;
+    try {
+      const r = await fetch('/analytics');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+    } catch (e) {
+      document.getElementById('status').textContent = 'Could not load data: ' + e.message;
+      return;
+    }
+
+    Chart.defaults.color = css('--muted');
+    Chart.defaults.borderColor = css('--border');
+    const accent = css('--accent');
+    const danger = css('--danger');
+    const common = { maintainAspectRatio: false, plugins: { legend: { display: false } } };
+
+    const s = d.summary;
+    document.getElementById('k-total').textContent = fmt(s.total_requests);
+    document.getElementById('k-errors').textContent = fmt(s.total_errors);
+    document.getElementById('k-rate').textContent = s.error_rate + '%';
+    document.getElementById('k-users').textContent = fmt(s.peak_daily_users);
+    document.getElementById('k-ips').textContent = fmt(s.suspicious_ips);
+
+    new Chart(document.getElementById('c-endpoints'), {
+      type: 'bar',
+      data: { labels: d.endpoints.map(e => e.endpoint),
+              datasets: [{ data: d.endpoints.map(e => e.count), backgroundColor: accent }] },
+      options: { ...common, indexAxis: 'y' }
+    });
+
+    new Chart(document.getElementById('c-dau'), {
+      type: 'bar',
+      data: { labels: d.daily.map(x => x.date),
+              datasets: [{ data: d.daily.map(x => x.users), backgroundColor: accent }] },
+      options: common
+    });
+
+    new Chart(document.getElementById('c-trend'), {
+      type: 'line',
+      data: { labels: d.hourly.map(h => h.hour),
+              datasets: [{ label: 'Errors', data: d.hourly.map(h => h.errors),
+                           borderColor: danger, backgroundColor: danger, pointRadius: 1, tension: 0.25 }] },
+      options: { ...common, scales: { x: { ticks: { maxTicksLimit: 12 } } } }
+    });
+
+    // Combine all days into 24 hour-of-day buckets to show the daily error pattern
+    const total = Array(24).fill(0), errs = Array(24).fill(0);
+    d.hourly.forEach(h => {
+      const hr = parseInt(h.hour.slice(11, 13), 10);
+      total[hr] += h.total;
+      errs[hr] += h.errors;
+    });
+    new Chart(document.getElementById('c-hod'), {
+      type: 'bar',
+      data: { labels: total.map((_, i) => String(i).padStart(2, '0') + ':00'),
+              datasets: [{ data: total.map((t, i) => t ? +(errs[i] / t * 100).toFixed(1) : 0),
+                           backgroundColor: danger }] },
+      options: { ...common, scales: { x: { ticks: { maxTicksLimit: 12 } } } }
+    });
+
+    const tbody = document.getElementById('anomalies');
+    d.anomalies.forEach(a => {
+      const tr = document.createElement('tr');
+      [a.ip, a.failed_attempts].forEach(v => {
+        const td = document.createElement('td'); td.textContent = v; tr.appendChild(td);
+      });
+      const td = document.createElement('td');
+      const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'Suspicious';
+      td.appendChild(b); tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+
+    if (d.last_run) {
+      document.getElementById('footer').textContent =
+        'Last MapReduce results loaded: ' + new Date(d.last_run).toLocaleString();
+    }
+  }
+  main();
+</script>
+</body>
+</html>
